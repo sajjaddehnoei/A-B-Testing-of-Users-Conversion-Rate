@@ -1,0 +1,135 @@
+---
+title: "A/B testing Using Customer Visits Data"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=T,comment="##",fig.height=5.5, fig.width=18,
+dpi=2*72, warning=F, options(scipen=999), message = F)
+options(dplyr.summarise.inform = FALSE)
+```
+
+# Libraries
+```{r}
+library(tidyverse)
+library(powerMediation)
+library("knitr")
+```
+
+```{r}
+themeSajjad <-   
+  theme(axis.text = element_text(size = 20), 
+  axis.title = element_text(size = 17),
+  legend.title=element_text(size=20),
+  legend.text = element_text(size = 20),
+  axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)))
+```
+
+
+# Read data
+```{r}
+z <- read_csv(paste0(here::here(), "/ab_data.csv"))
+```
+
+```{r}
+x <- z
+```
+
+# Missing values
+
+```{r}
+nMiss <- function(x) sum(is.na(x))
+
+x %>%
+  summarise_all(nMiss)
+```
+No missing values.
+
+# Exploring convertion rate across groups
+
+```{r}
+x %>%
+  group_by(group) %>%
+  summarise(n = n(), conversionRate = mean(converted))
+```
+There are `r nrow(x %>% filter(group == "control"))` users in the control group 
+and `r nrow(x %>% filter(group == "treatment"))` users in the treatment group.
+
+The average conversion rate for the is 
+`r round(mean(x$converted[x$group == "control"]), 3)` for the control group and
+`r round(mean(x$converted[x$group == "treatment"]), 3)` for the treatment group.
+
+
+# A/B test (Checking effect of group on conversion rate)
+We want to develop a Logistic Regression model to evaluate the effects of groups
+assigned to users in their conversion rate. Before running the model we need to 
+make sure we adjust the model for other factors that might have affected the 
+rate of conversion. In the dataset we timestamp and landing_page that both could
+potentially affect the conversion rate as different month could have different 
+user interest rate and landing_pages are different and one cannot compare effect
+of groups on conversion rate for differnt landing_page`s.
+
+Let's first check how conversion rate changes in different landing pages.
+
+```{r}
+x %>%
+  group_by(group, landing_page) %>%
+  summarise(m = mean(converted)) %>%
+  ggplot(aes(x = group, y = m, fill = group))+
+  geom_bar(stat = "identity")+
+  labs(x = "Group", y = "Landing Page")+
+  scale_fill_brewer(palette = "Set1")+
+  coord_flip()+
+  themeSajjad+
+  facet_grid(~landing_page)+
+  theme(strip.text.x = element_text(size = 20, colour = "red", angle = 0))
+```
+
+And now check how conversion rate changes through time. For simplicty I only
+consider effect of date and will remove time of the day from the datetime 
+object. 
+```{r}
+x <- x %>%
+  mutate(date = as.Date(format(timestamp, "%Y-%m-%d"), "%Y-%m-%d" ))
+```
+
+```{r}
+x %>%
+  group_by(date) %>%
+  mutate(n = sum(converted)) %>%
+  ggplot(aes(x = date, y = n))+
+  geom_line(stat = "identity")+
+  scale_x_date(date_labels = "%b %d", date_breaks = "1 day")
+```
+
+It looks like the 2nd and 24th days of January had lower conversion 
+rates. Let's check the datbase for these two days only to see if there's any
+differences between the to groups in that those days.
+```{r}
+x %>%
+  filter(date %in% c(as.Date("2017-01-02", "%Y-%m-%d"), 
+                     as.Date("2017-01-24", "%Y-%m-%d"))) %>%
+  group_by(group) %>%
+  summarise(m = mean(converted))
+```
+
+The average conversion rate for those two days are similar to the rest of the 
+dataset, so we can assume the conversion rate has been the same across the study
+period and do not include date in the model.
+
+Let's now build our Logistic Regression model which only inclues group and 
+landing_page variables. Here's our hypothesis for this test:
+
+$H_{0}: P_{control} = P_{treatment}$
+$H_{a}: P_{control} < P_{treatment}$
+```{r}
+x <- x %>% mutate(converted = factor(converted, levels = c(0, 1)))
+lrModel <- glm(converted ~ group + landing_page, data = x, family = "binomial")
+
+summary(lrModel)
+```
+
+Looking at the p values of the model, we don't have sufficient evidence to reject
+the null hypothesis. In the context of our test, this means that there is not 
+enough statistical evidence in our survey to show a difference in the rate of 
+conversion between two different groups, when adjusted for landing page.
